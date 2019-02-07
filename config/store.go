@@ -4,6 +4,10 @@
 package config
 
 import (
+	"strings"
+
+	"github.com/pkg/errors"
+
 	"github.com/mattermost/mattermost-server/model"
 )
 
@@ -38,4 +42,16 @@ type Store interface {
 
 	// Close cleans up resources associated with the store.
 	Close() error
+}
+
+func NewStore(dsn string, watch bool) (Store, error) {
+	if strings.HasPrefix(dsn, "mysql://") || strings.HasPrefix(dsn, "postgres://") {
+		if watch {
+			return nil, errors.New("cannot watch a database config")
+		}
+
+		return NewDatabaseStore(dsn)
+	}
+
+	return NewFileStore(dsn, watch)
 }
