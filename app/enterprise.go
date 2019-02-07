@@ -110,6 +110,9 @@ func (s *Server) initEnterprise() {
 	if elasticsearchInterface != nil {
 		s.Elasticsearch = elasticsearchInterface(s.FakeApp())
 	}
+	if ldapInterface != nil {
+		s.Ldap = ldapInterface(s.FakeApp())
+	}
 	if messageExportInterface != nil {
 		s.MessageExport = messageExportInterface(s.FakeApp())
 	}
