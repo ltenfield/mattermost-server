@@ -29,7 +29,9 @@ type databaseStore struct {
 }
 
 // NewDatabaseStore creates a new instance of a config store backed by the given database.
-func NewDatabaseStore(dsn string) (ds *databaseStore, err error) {
+func NewDatabaseStore(db *sql.DB, driverName string) (ds *databaseStore, err error) {
+	
+
 	// TODO: Connection logic should probably be refactored and shared by both store and config,
 	// with the config store accepting a *sql.DB directly.
 	driverName, dataSourceName, err := parseDSN(dsn)
@@ -45,7 +47,7 @@ func NewDatabaseStore(dsn string) (ds *databaseStore, err error) {
 
 	ds = &databaseStore{
 		dsn: dsn,
-		db:  db,
+		db:  sql.NewDb(db, driverName)
 	}
 	if err = ds.Load(); err != nil {
 		return nil, errors.Wrap(err, "failed to load")

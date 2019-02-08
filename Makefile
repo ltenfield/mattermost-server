@@ -439,7 +439,7 @@ run-server: start-docker ## Starts the server.
 	@echo Running mattermost for development
 
 	mkdir -p $(BUILD_WEBAPP_DIR)/dist/files
-	$(GO) run $(GOFLAGS) $(GO_LINKER_FLAGS) $(PLATFORM_FILES) --disableconfigwatch &
+	$(GO) run $(GOFLAGS) $(GO_LINKER_FLAGS) $(PLATFORM_FILES) --disableconfigwatch --config "postgres://mmuser:mostest@dockerhost:5432/mattermost_test?sslmode=disable&connect_timeout=10"
 
 debug-server: start-docker
 	mkdir -p $(BUILD_WEBAPP_DIR)/dist/files

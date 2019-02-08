@@ -4,7 +4,6 @@
 package sqlstore
 
 import (
-	"context"
 	dbsql "database/sql"
 	"encoding/json"
 	"errors"
@@ -12,7 +11,6 @@ import (
 	sqltrace "log"
 	"os"
 	"strings"
-	"sync/atomic"
 	"time"
 
 	"github.com/dyatlov/go-opengraph/opengraph"
@@ -22,6 +20,7 @@ import (
 	"github.com/mattermost/mattermost-server/einterfaces"
 	"github.com/mattermost/mattermost-server/mlog"
 	"github.com/mattermost/mattermost-server/model"
+	"github.com/mattermost/mattermost-server/sql"
 	"github.com/mattermost/mattermost-server/store"
 	"github.com/mattermost/mattermost-server/utils"
 )
@@ -100,24 +99,17 @@ type SqlSupplierOldStores struct {
 }
 
 type SqlSupplier struct {
-	// rrCounter and srCounter should be kept first.
-	// See https://github.com/mattermost/mattermost-server/pull/7281
-	rrCounter      int64
-	srCounter      int64
-	next           store.LayeredStoreSupplier
-	master         *gorp.DbMap
-	replicas       []*gorp.DbMap
-	searchReplicas []*gorp.DbMap
-	oldStores      SqlSupplierOldStores
-	settings       *model.SqlSettings
-	lockedToMaster bool
+	manager   sql.Manager
+	next      store.LayeredStoreSupplier
+	oldStores SqlSupplierOldStores
+	settings  *model.SqlSettings
+
+	gorpDbMaps map[*dbsql.DB]*gorp.DbMap
 }
 
 func NewSqlSupplier(settings model.SqlSettings, metrics einterfaces.MetricsInterface) *SqlSupplier {
 	supplier := &SqlSupplier{
-		rrCounter: 0,
-		srCounter: 0,
-		settings:  &settings,
+		settings: &settings,
 	}
 
 	supplier.initConnection()
@@ -204,35 +196,14 @@ func (s *SqlSupplier) Next() store.LayeredStoreSupplier {
 }
 
 func setupConnection(con_type string, dataSource string, settings *model.SqlSettings) *gorp.DbMap {
-	db, err := dbsql.Open(*settings.DriverName, dataSource)
+	db, err := sql.Open(*settings.DriverName, dataSource)
 	if err != nil {
-		mlog.Critical(fmt.Sprintf("Failed to open SQL connection to err:%v", err.Error()))
+		mlog.Critical("Failed to open SQL connection", mlog.String("connection_type", con_type), mlog.Err(err))
 		time.Sleep(time.Second)
 		os.Exit(EXIT_DB_OPEN)
 	}
 
-	for i := 0; i < DB_PING_ATTEMPTS; i++ {
-		mlog.Info(fmt.Sprintf("Pinging SQL %v database", con_type))
-		ctx, cancel := context.WithTimeout(context.Background(), DB_PING_TIMEOUT_SECS*time.Second)
-		defer cancel()
-		err = db.PingContext(ctx)
-		if err == nil {
-			break
-		} else {
-			if i == DB_PING_ATTEMPTS-1 {
-				mlog.Critical(fmt.Sprintf("Failed to ping DB, server will exit err=%v", err))
-				time.Sleep(time.Second)
-				os.Exit(EXIT_PING)
-			} else {
-				mlog.Error(fmt.Sprintf("Failed to ping DB retrying in %v seconds err=%v", DB_PING_TIMEOUT_SECS, err))
-				time.Sleep(DB_PING_TIMEOUT_SECS * time.Second)
-			}
-		}
-	}
-
-	db.SetMaxIdleConns(*settings.MaxIdleConns)
-	db.SetMaxOpenConns(*settings.MaxOpenConns)
-	db.SetConnMaxLifetime(time.Duration(*settings.ConnMaxLifetimeMilliseconds) * time.Millisecond)
+	sql.ApplySettings(db)
 
 	var dbmap *gorp.DbMap
 
@@ -275,9 +246,9 @@ func (s *SqlSupplier) initConnection() {
 	}
 }
 
-func (ss *SqlSupplier) DriverName() string {
-	return *ss.settings.DriverName
-}
+// func (ss *SqlSupplier) DriverName() string p.DbMap{
+// 	return *ss.settings.DriverName
+// }
 
 func (ss *SqlSupplier) GetCurrentSchemaVersion() string {
 	version, _ := ss.GetMaster().SelectStr("SELECT Value FROM Systems WHERE Name='Version'")
@@ -285,25 +256,15 @@ func (ss *SqlSupplier) GetCurrentSchemaVersion() string {
 }
 
 func (ss *SqlSupplier) GetMaster() *gorp.DbMap {
-	return ss.master
+	return ss.gorpDbMaps[ss.master.GetMaster()]
 }
 
 func (ss *SqlSupplier) GetSearchReplica() *gorp.DbMap {
-	if len(ss.settings.DataSourceSearchReplicas) == 0 {
-		return ss.GetReplica()
-	}
-
-	rrNum := atomic.AddInt64(&ss.srCounter, 1) % int64(len(ss.searchReplicas))
-	return ss.searchReplicas[rrNum]
+	return ss.gorpDbMaps[ss.master.GetSearchReplica()]
 }
 
 func (ss *SqlSupplier) GetReplica() *gorp.DbMap {
-	if len(ss.settings.DataSourceReplicas) == 0 || ss.lockedToMaster {
-		return ss.GetMaster()
-	}
-
-	rrNum := atomic.AddInt64(&ss.rrCounter, 1) % int64(len(ss.replicas))
-	return ss.replicas[rrNum]
+	return ss.gorpDbMaps[ss.master.GetReplica()]
 }
 
 func (ss *SqlSupplier) TotalMasterDbConnections() int {
@@ -906,18 +867,15 @@ func (ss *SqlSupplier) GetAllConns() []*gorp.DbMap {
 
 func (ss *SqlSupplier) Close() {
 	mlog.Info("Closing SqlStore")
-	ss.master.Db.Close()
-	for _, replica := range ss.replicas {
-		replica.Db.Close()
-	}
+	ss.manager.Close()
 }
 
 func (ss *SqlSupplier) LockToMaster() {
-	ss.lockedToMaster = true
+	ss.manager.LockToMaster()
 }
 
 func (ss *SqlSupplier) UnlockFromMaster() {
-	ss.lockedToMaster = false
+	ss.manager.UnlockFromMaster()
 }
 
 func (ss *SqlSupplier) Team() store.TeamStore {
